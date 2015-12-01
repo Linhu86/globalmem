@@ -8,7 +8,6 @@
 #include <linux/cdev.h>
 #include <linux/slab.h>
 #include <asm/io.h>
-#include <asm/system.h>
 #include <asm/uaccess.h>
 #include <linux/poll.h>
 
@@ -222,52 +221,9 @@ static ssize_t globalfifo_write(struct file *filp, const char __user
     return ret;
 }
 
-
-static loff_t globalfifo_llseek(struct file *filp, loff_t offset,int orig)
-{
-  loff_t ret = 0;
-  switch (orig)
-  {
-    case 0:
-      if (offset < 0)
-      {
-        ret = - EINVAL;
-        break;
-      }
-      if ((unsigned int)offset > GLOBALFIFO_SIZE)
-      {
-        ret = - EINVAL;
-        break;
-      }
-      filp->f_pos = (unsigned int)offset;
-      ret = filp->f_pos;
-      break;
-    case 1:
-      if ((filp->f_pos + offset) > GLOBALFIFO_SIZE)
-      {
-        ret = - EINVAL;
-        break;
-      }
-      if ((filp->f_pos + offset) < 0)
-      {
-        ret = - EINVAL;
-        break;
-      }
-      filp->f_pos += offset;
-      ret = filp->f_pos;
-      ret = - EINVAL;
-      break;
-    default: 
-      ret= - EINVAL;
-      break;
-  }
-  return ret;
-}
-
 static const struct file_operations globalfifo_fops =
 {
   .owner        = THIS_MODULE,
-  .llseek       = globalfifo_llseek,
   .read         = globalfifo_read,
   .write        = globalfifo_write,
   .unlocked_ioctl = globalfifo_ioctl, 	/* ioctl */
