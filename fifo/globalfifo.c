@@ -6,12 +6,10 @@
 #include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/cdev.h>
-#include <linux/semaphore.h>
-#include <linux/mutex.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 #include <asm/system.h>
 #include <asm/uaccess.h>
-#include <linux/slab.h>   /* kmalloc */
 #include <linux/poll.h>
 
 #define GLOBALFIFO_SIZE 0x1000  
@@ -105,7 +103,7 @@ static ssize_t globalfifo_read(struct file *filp, char __user *buf,size_t count,
     
   add_wait_queue(&dev->r_wait, &wait); /* enter to wait queue. */
 
-  while(dev->current_len == 0)
+  if(dev->current_len == 0)
   {
     if(filp->f_flags & O_NONBLOCK)
     {
@@ -168,7 +166,7 @@ static ssize_t globalfifo_write(struct file *filp, const char __user
 
   add_wait_queue(&dev->w_wait, &wait);
 
-  while(dev->current_len == GLOBALFIFO_SIZE)
+  if(dev->current_len == GLOBALFIFO_SIZE)
   {
     if(filp->f_flags & O_NONBLOCK)
     {
