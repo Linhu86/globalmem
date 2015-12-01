@@ -93,7 +93,7 @@ static unsigned int globalfifo_poll(struct file *filp, poll_table *wait)
 }
 
 static ssize_t globalfifo_read(struct file *filp, char __user *buf,size_t count,
-                               off_t *ppos)
+                               loff_t *ppos)
 {
   int ret = 0;
   struct globalfifo_dev *dev = filp->private_data; 
@@ -189,9 +189,9 @@ static ssize_t globalfifo_write(struct file *filp, const char __user
     down(&dev->sem);
   }
 
-  if(count > dev->current_len)
+  if(count > GLOBALFIFO_SIZE - dev->current_len)
   {
-    count = dev->current_len;
+    count = GLOBALFIFO_SIZE - dev->current_len;
   }
  
   if (copy_from_user(dev->mem + dev->current_len, buf, count))
@@ -270,9 +270,9 @@ static const struct file_operations globalfifo_fops =
   .llseek       = globalfifo_llseek,
   .read         = globalfifo_read,
   .write        = globalfifo_write,
-  .compat_ioctl = globalfifo_ioctl, 	/* ioctl */
+  .unlocked_ioctl = globalfifo_ioctl, 	/* ioctl */
   .poll         = globalfifo_poll,
-  .fsync        = globalfifo_fasync,
+  .fasync        = globalfifo_fasync,
   .open         = globalfifo_open,
   .release      = globalfifo_release,
 };
