@@ -12,9 +12,10 @@
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <linux/slab.h>   /* kmalloc */
+#include <linux/poll.h>
 
 #define GLOBALFIFO_SIZE 0x1000  
-#define MEM_CLEAR 0x1 
+#define FIFO_CLEAR 0x1 
 #define GLOBALFIFO_MAJOR 0
 
 static int globalfifo_major=GLOBALFIFO_MAJOR;
@@ -27,10 +28,17 @@ struct globalfifo_dev
   struct semaphore sem; /* semaphore for concorrent control */
   wait_queue_head_t r_wait; /* wait blocking read header */
   wait_queue_head_t w_wait; /* wait blocking write header */
+  struct fasync_struct *async_queue;
 };
 
 struct globalfifo_dev *globalfifo_devp; 
- 
+
+//support for globalfifo device fasync function.
+static int globalfifo_fasync(int fd, struct file *filp, int mode)
+{
+  struct globalfifo_dev *dev = filp->private_data;
+  return fasync_helper(fd, filp, mode, &dev->async_queue); /* setup a async notify queue. */
+} 
 
 int globalfifo_open(struct inode *inode, struct file *filp)
 {
@@ -38,28 +46,24 @@ int globalfifo_open(struct inode *inode, struct file *filp)
   return 0;
 }
 
-
 int globalfifo_release(struct inode *inode, struct file *filp)
 {
+  globalfifo_fasync(-1, filp, 0); /* Delete from async notify queue. */
   return 0;
 }
 
-
-
 static int globalfifo_ioctl(struct inode *inodep, struct file *filp,
-                                        unsigned int cmd, unsigned long arg)
+                            unsigned int cmd, unsigned long arg)
 {
   struct globalfifo_dev *dev = filp->private_data;
   switch (cmd)
   {
-    case MEM_CLEAR:
-      if(down_interruptible(&dev->sem))
-      {
-        return -ERESTARTSYS;
-      }
+    case FIFO_CLEAR:
+      down(&dev->sem);
+      dev->current_len  = 0;
       memset(dev->mem, 0, GLOBALFIFO_SIZE);
       up(&dev->sem);
-      printk(KERN_INFO "globalfifo is set to zero\n");
+      printk(KERN_INFO "global fifo is set to zero.\n");
       break;
     default:
       return - EINVAL;
@@ -67,9 +71,31 @@ static int globalfifo_ioctl(struct inode *inodep, struct file *filp,
   return 0;
 }
 
+static unsigned int globalfifo_poll(struct file *filp, poll_table *wait)
+{
+  unsigned int mask = 0;
+  struct globalfifo_dev *dev = filp->private_data;
+
+  down(&dev->sem);
+  poll_wait(filp, &dev->r_wait, wait);
+  poll_wait(filp, &dev->w_wait, wait);
+
+  if(dev->current_len != 0)
+  {
+    mask |= POLLIN | POLLRDNORM;
+  }
+
+  if(dev->current_len != GLOBALFIFO_SIZE)
+  {
+    mask |= POLLOUT | POLLWRNORM;
+  }
+
+  up(&dev->sem);
+  return mask;
+}
 
 static ssize_t globalfifo_read(struct file *filp, char __user *buf,size_t count,
-                                               off_t *ppos)
+                               off_t *ppos)
 {
   int ret = 0;
   struct globalfifo_dev *dev = filp->private_data; 
@@ -116,7 +142,7 @@ static ssize_t globalfifo_read(struct file *filp, char __user *buf,size_t count,
   {
     memcpy(dev->mem, dev->mem + count, dev->current_len - count);
     dev->current_len -= count;
-    printk(KERN_INFO "read %d bytes(s) from %lu\n", count, dev->current_len);
+    printk(KERN_INFO "read %lu bytes(s) from %d\n", count, dev->current_len);
     wake_up_interruptible(&dev->w_wait);
     ret = count;
   }
@@ -155,7 +181,7 @@ static ssize_t globalfifo_write(struct file *filp, const char __user
     
     schedule();
     
-    /*Current read blocking, let other process run. */
+    /*Current write blocking, let other process run. */
     if(signal_pending(current))
     {
       ret = -ERESTARTSYS;
@@ -178,8 +204,15 @@ static ssize_t globalfifo_write(struct file *filp, const char __user
   else
   {
     dev->current_len += count;
-    printk(KERN_INFO "written %d bytes(s) from %lu\n", count, dev->current_len);
+    printk(KERN_INFO "written %lu bytes(s) from %u\n", count, dev->current_len);
     wake_up_interruptible(&dev->r_wait);
+
+    if(dev->async_queue)
+    {
+      kill_fasync(&dev->async_queue, SIGIO, POLL_IN); // Send a notificaion to user space to read.
+      printk(KERN_DEBUG "%s kill SIGIO.\n", __FUNCTION__);
+    }
+
     ret = count;
   }
 
@@ -235,13 +268,15 @@ static loff_t globalfifo_llseek(struct file *filp, loff_t offset,int orig)
 
 static const struct file_operations globalfifo_fops =
 {
-  .owner = THIS_MODULE,
-  .llseek = globalfifo_llseek,
-  .read = globalfifo_read,
-  .write = globalfifo_write,
+  .owner        = THIS_MODULE,
+  .llseek       = globalfifo_llseek,
+  .read         = globalfifo_read,
+  .write        = globalfifo_write,
   .compat_ioctl = globalfifo_ioctl, 	/* ioctl */
-  .open = globalfifo_open,
-  .release = globalfifo_release,
+  .poll         = globalfifo_poll,
+  .fsync        = globalfifo_fasync,
+  .open         = globalfifo_open,
+  .release      = globalfifo_release,
 };
 
 static void globalfifo_setup_cdev(struct globalfifo_dev *dev, int
@@ -253,9 +288,10 @@ index)
   dev->cdev.owner = THIS_MODULE;
   dev->cdev.ops = &globalfifo_fops;
   err = cdev_add(&dev->cdev, devno, 1);
-  if (err)
+  if(err)
+  {
     printk(KERN_NOTICE "Error %d adding LED%d", err, index);
-
+  }
 }
 
 int globalfifo_init(void)
@@ -264,7 +300,7 @@ int globalfifo_init(void)
   printk(KERN_INFO "start to init driver.\n");
   dev_t devno=MKDEV(globalfifo_major,0);
 
-  if ( globalfifo_major)
+  if(globalfifo_major)
   {
     result=register_chrdev_region(devno,1,"globalfifo");
   }
@@ -313,7 +349,7 @@ void globalfifo_exit(void)
 }
 
 /* Module info */
-MODULE_AUTHOR("Joe Jiang");
+MODULE_AUTHOR("Linhu Ying.");
 MODULE_LICENSE("Dual BSD/GPL");
 module_param(globalfifo_major,int,S_IRUGO);
 module_init(globalfifo_init);
